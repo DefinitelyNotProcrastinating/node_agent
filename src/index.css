@@ -1,0 +1,65 @@
+/* Basic layout styles */
+body {
+  font-family: Arial, Helvetica, sans-serif;
+  margin: 0;
+  padding: 0;
+}
+
+.app-container {
+  display: flex;
+  height: 100vh;
+  width: 100vw;
+  background-color: #f0f2f5;
+}
+
+/* Workflow canvas styles */
+.workflow-container {
+  flex-grow: 1;
+  height: 100%;
+}
+
+/* Sidebar styles */
+.sidebar {
+  width: 250px;
+  border-right: 1px solid #ddd;
+  padding: 20px;
+  background-color: #ffffff;
+}
+
+.sidebar h3 {
+  margin-top: 0;
+  color: #333;
+}
+
+.sidebar .dnd-node {
+  height: 40px;
+  padding: 4px;
+  border: 1px solid #1a192b;
+  border-radius: 4px;
+  margin-bottom: 10px;
+  display: flex;
+  justify-content: center;
+  align-items: center;
+  cursor: grab;
+  font-weight: bold;
+}
+
+.sidebar .dnd-node.input {
+  border-color: #0041d0;
+  color: #0041d0;
+}
+
+.sidebar .dnd-node.default {
+  border-color: #ff9800;
+  color: #ff9800;
+}
+
+.sidebar .dnd-node.output {
+  border-color: #4caf50;
+  color: #4caf50;
+}
+
+/* Ensure ReactFlow attribution is visible */
+.react-flow__attribution {
+  background: rgba(255, 255, 255, 0.8) !important;
+}

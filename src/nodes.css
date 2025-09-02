@@ -1,0 +1,51 @@
+.react-flow__node-multiInput,
+.react-flow__node-apiNode {
+  background: #fff;
+  border: 1px solid #555;
+  border-radius: 5px;
+  padding: 10px;
+  font-size: 12px;
+  text-align: center;
+}
+
+.multi-input-node-body,
+.api-node-body {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+
+.multi-input-node-body button,
+.api-node-body button {
+  padding: 5px;
+  border-radius: 3px;
+  border: 1px solid #ccc;
+  cursor: pointer;
+  background: #f0f0f0;
+}
+
+.multi-input-node-body button:hover,
+.api-node-body button:hover {
+  background: #e0e0e0;
+}
+
+.api-node-status {
+  margin-top: 8px;
+  padding: 5px;
+  border-radius: 3px;
+  font-family: monospace;
+  font-size: 11px;
+}
+
+.api-node-status.loading {
+  background-color: #e0e0e0;
+  color: #333;
+}
+.api-node-status.success {
+  background-color: #d4edda;
+  color: #155724;
+}
+.api-node-status.error {
+  background-color: #f8d7da;
+  color: #721c24;
+}
