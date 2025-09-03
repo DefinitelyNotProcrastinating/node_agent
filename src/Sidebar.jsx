@@ -48,6 +48,14 @@ const Sidebar = () => {
       >
         API Call Node
       </div>
+
+            <div className="dnd-node" onDragStart={(event) => onDragStart(event, 'textInputTrigger')} draggable>
+        Text Input Trigger
+      </div>
+      <div className="dnd-node" onDragStart={(event) => onDragStart(event, 'llmNode')} draggable>
+        LLM Node
+      </div>
+    
     </aside>
   );
 };

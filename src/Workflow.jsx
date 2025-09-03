@@ -12,8 +12,8 @@ import ReactFlow, {
 // You need to import the CSS for ReactFlow to work
 import 'reactflow/dist/style.css';
 
-import MultiInputNode from './MultiInputNode'; // <-- 1. IMPORT
-import ApiNode from './ApiNode'; // <-- 1. IMPORT
+import MultiInputNode from './MultiInputNode';
+import ApiNode from './ApiNode'; 
 
 const initialNodes = [
   {
