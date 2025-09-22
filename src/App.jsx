@@ -1,4 +1,4 @@
-import React, { useState, useCallback, useEffect } from 'react';
+import React, { useState, useCallback } from 'react';
 import ReactFlow, {
   ReactFlowProvider,
   addEdge,
@@ -11,39 +11,35 @@ import ReactFlow, {
 import 'reactflow/dist/style.css';
 import './nodes/nodes.css';
 
-// Import all nodes
-import Sidebar from './Sidebar';
-import MultiInputNode from './nodes/MultiInputNode';
-import ApiNode from './nodes/ApiNode';
-import TextInputTriggerNode from './nodes/TextInputTriggerNode';
-import LLMNode from './nodes/LLMNode';
+import Sidebar from './Sidebar.jsx';
+import TextInputTriggerNode from './nodes/TextInputTriggerNode.jsx';
+import LLMNode from './nodes/LLMNode.jsx';
+import ApiNode from './nodes/ApiNode.jsx';
+import TextDisplayNode from './nodes/TextDisplayNode.jsx';
+import MultiInputNode from './nodes/MultiInputNode.jsx';
 
-// Register all custom node types
 const nodeTypes = {
-  multiInput: MultiInputNode,
-  apiNode: ApiNode,
   textInputTrigger: TextInputTriggerNode,
   llmNode: LLMNode,
+  apiNode: ApiNode,
+  textDisplayNode: TextDisplayNode,
+  multiInput: MultiInputNode,
 };
 
-// Initial state for demonstration
-const initialNodes = [];
-const initialEdges = [];
 let id = 1;
-const getId = () => `${id++}`;
+const getId = () => `node_${id++}`;
 
 const App = () => {
-  const [nodes, setNodes, onNodesChange] = useNodesState(initialNodes);
-  const [edges, setEdges, onEdgesChange] = useEdgesState(initialEdges);
+  const [nodes, setNodes, onNodesChange] = useNodesState([]);
+  const [edges, setEdges, onEdgesChange] = useEdgesState([]);
   const [reactFlowInstance, setReactFlowInstance] = useState(null);
+  const [isRunning, setIsRunning] = useState(false);
 
-  // --- Core State & Engine Logic ---
-
-  const onUpdateNodeData = useCallback((nodeId, newConfig) => {
+  const onUpdateNodeData = useCallback((nodeId, newData) => {
     setNodes((nds) =>
       nds.map((node) =>
         node.id === nodeId
-          ? { ...node, data: { ...node.data, config: newConfig } }
+          ? { ...node, data: { ...node.data, ...newData } }
           : node
       )
     );
@@ -66,18 +62,27 @@ const App = () => {
   };
 
   const resetAllNodeStatus = () => {
-     setNodes((nds) =>
+    setNodes((nds) =>
       nds.map((node) => ({
         ...node,
-        data: { ...node.data, runtime: { status: 'pending', input: null, output: null, error: null } },
+        data: { ...node.data, runtime: { status: 'pending', output: null, error: null } },
       }))
     );
   };
 
-  const runWorkflow = async (startNodeId) => {
+  const runWorkflow = async () => {
+    const startNode = nodes.find(n => n.data.isStartNode);
+    if (!startNode) {
+      alert("Please mark one 'Text Input Trigger' node as the 'Start Node'.");
+      return;
+    }
+    
+    setIsRunning(true);
     resetAllNodeStatus();
-    const processingQueue = [startNodeId];
+    
+    const processingQueue = [startNode.id];
     const completedNodes = new Set();
+    const nodeDependencies = new Map(nodes.map(n => [n.id, edges.filter(e => e.target === n.id).map(e => e.source)]));
     
     while (processingQueue.length > 0) {
       const currentNodeId = processingQueue.shift();
@@ -85,86 +90,114 @@ const App = () => {
       
       if (!currentNode || completedNodes.has(currentNodeId)) continue;
       
-      // "Go Condition": Check if all parent nodes are completed
-      const parentEdges = edges.filter(e => e.target === currentNodeId);
-      const parentNodeIds = parentEdges.map(e => e.source);
-      const areParentsReady = parentNodeIds.every(id => completedNodes.has(id));
+      const parents = nodeDependencies.get(currentNodeId) || [];
+      const areParentsReady = parents.every(parentId => completedNodes.has(parentId));
 
       if (!areParentsReady) {
-          // If parents not ready, push to back of queue and try again later
-          processingQueue.push(currentNodeId);
-          // Simple safeguard against infinite loops in this demo
-          if (processingQueue.filter(id => id === currentNodeId).length > 2) continue; 
+          if(!processingQueue.includes(currentNodeId)) processingQueue.push(currentNodeId);
           continue;
       }
 
-      // --- Execute Node Logic ---
       updateNodeRuntimeState(currentNodeId, { status: 'running' });
       
       try {
         let output = null;
-        const parentOutputs = parentNodeIds.map(id => nodes.find(n => n.id === id).data.runtime.output);
-        
+        const parentOutputs = parents.map(id => nodes.find(n => n.id === id).data.runtime.output);
+        const config = currentNode.data;
+
         switch (currentNode.type) {
+          // --- THIS IS THE FIX ---
+          // The logic now correctly uses the node's own configured text as its primary output.
+          // It also handles cases where it might be in the middle of a flow.
           case 'textInputTrigger':
-            output = currentNode.data.config.text;
+            const parentText = parentOutputs.join('\n');
+            const ownText = config.text || '';
+            // If there's parent text, add a space before appending its own text.
+            output = parentText ? `${parentText}\n${ownText}` : ownText;
             break;
             
           case 'llmNode':
-            const prompt = parentOutputs.join('\n'); // Combine outputs from parents
-            const config = currentNode.data.config;
-            
-            const response = await fetch("https://api.openai.com/v1/chat/completions", {
+            if (!config.model) throw new Error("Ollama model name is missing.");
+            if (!config.endpoint) throw new Error("Ollama API endpoint is missing.");
+
+            const prompt = parentOutputs.join('\n');
+            if (!prompt) {
+                // If there's no input, we shouldn't call the API.
+                // We'll mark it as a warning/error state instead.
+                throw new Error("Input prompt is empty.");
+            }
+            const options = {
+              temperature: parseFloat(config.temperature),
+              top_p: parseFloat(config.top_p),
+              top_k: parseInt(config.top_k, 10),
+            };
+
+            const payload = {
+              model: config.model,
+              messages: [{ role: "user", content: prompt }],
+              stream: false,
+              options: options
+            };
+
+            const response = await fetch(config.endpoint, {
               method: 'POST',
-              headers: {
-                'Content-Type': 'application/json',
-                'Authorization': `Bearer ${config.apiKey}`
-              },
-              body: JSON.stringify({
-                model: config.model,
-                messages: [{ role: "user", content: prompt }],
-                temperature: parseFloat(config.temperature)
-              })
+              headers: { 'Content-Type': 'application/json' },
+              body: JSON.stringify(payload)
             });
-            if(!response.ok) throw new Error(`API Error: ${response.statusText}`);
+
+            if (!response.ok) {
+              const errorText = await response.text();
+              throw new Error(`API Error: ${response.status} - ${errorText}`);
+            }
             const result = await response.json();
-            output = result.choices[0].message.content;
+            if (!result.message || !result.message.content) {
+              throw new Error("Invalid response structure from Ollama API.");
+            }
+            output = result.message.content;
             break;
+            
+          case 'apiNode':
+             if (!config.url) throw new Error("API URL is missing.");
+             const apiResponse = await fetch(config.url, {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ inputs: parentOutputs }),
+             });
+             if(!apiResponse.ok) throw new Error(`API Error: ${apiResponse.status} ${apiResponse.statusText}`);
+             output = await apiResponse.json();
+             break;
+             
+          case 'multiInput':
+             output = parentOutputs.join('\n');
+             break;
+             
+          case 'textDisplayNode':
+             output = parentOutputs.join('\n');
+             break;
         }
 
         updateNodeRuntimeState(currentNodeId, { status: 'completed', output });
         completedNodes.add(currentNodeId);
         
-        // Add children to the queue
         const childEdges = edges.filter(e => e.source === currentNodeId);
-        childEdges.forEach(edge => processingQueue.push(edge.target));
+        childEdges.forEach(edge => {
+            if(!processingQueue.includes(edge.target)) {
+                processingQueue.push(edge.target);
+            }
+        });
 
       } catch (error) {
         console.error("Error running node:", currentNodeId, error);
         updateNodeRuntimeState(currentNodeId, { status: 'error', error: error.message });
+        setIsRunning(false);
+        return; 
       }
     }
+    setIsRunning(false);
   };
 
-  // --- Keyboard Shortcuts ---
-  useEffect(() => {
-    const handleKeyDown = (event) => {
-      if (event.ctrlKey && event.key === 'Enter') {
-        event.preventDefault();
-        const defaultNode = nodes.find(n => n.data.config?.isDefault && n.data.config?.enabled);
-        if (defaultNode) {
-          runWorkflow(defaultNode.id);
-        } else {
-          alert("No enabled, default trigger node found to run.");
-        }
-      }
-    };
-    window.addEventListener('keydown', handleKeyDown);
-    return () => window.removeEventListener('keydown', handleKeyDown);
-  }, [nodes, runWorkflow]); // Re-bind if nodes change
-
-  // --- ReactFlow Setup (onDrop, onConnect, etc.) ---
   const onConnect = useCallback((params) => setEdges((eds) => addEdge(params, eds)), [setEdges]);
+
   const onDrop = useCallback(
     (event) => {
       event.preventDefault();
@@ -172,22 +205,51 @@ const App = () => {
       if (!type) return;
 
       const position = reactFlowInstance.screenToFlowPosition({ x: event.clientX, y: event.clientY });
+      
+      const baseData = {
+        onUpdate: onUpdateNodeData,
+        runtime: { status: 'pending', output: null, error: null },
+      };
+
+      let specificData = {};
+      switch (type) {
+        case 'llmNode':
+          specificData = {
+            endpoint: 'http://localhost:11434/api/chat',
+            model: 'llama3',
+            temperature: 0.8,
+            top_p: 0.9,
+            top_k: 40,
+          };
+          break;
+        case 'apiNode':
+          specificData = {
+            url: 'http://127.0.0.1:8000/api/process',
+          };
+          break;
+        case 'textInputTrigger':
+            specificData = {
+                text: '',
+                isStartNode: false,
+            };
+            break;
+        default:
+          specificData = {};
+          break;
+      }
+
       const newNode = {
         id: getId(),
         type,
         position,
-        data: {
-          config: {}, // For storing user settings
-          runtime: { status: 'pending' }, // For execution state
-          callbacks: { onUpdate: onUpdateNodeData, onTriggerRun: runWorkflow },
-        },
+        data: { ...baseData, ...specificData },
       };
+
       setNodes((nds) => nds.concat(newNode));
     },
-    [reactFlowInstance, onUpdateNodeData, runWorkflow]
+    [reactFlowInstance, onUpdateNodeData]
   );
   
-  // Wrapper required for ReactFlow hooks
   return (
     <div className="app-container">
       <Sidebar />
@@ -206,7 +268,11 @@ const App = () => {
         >
           <Controls />
           <Background />
-          <Panel position="top-right">Agentic Workflow Runner</Panel>
+          <Panel position="top-right">
+             <button onClick={runWorkflow} disabled={isRunning}>
+                {isRunning ? 'Running...' : 'Run Workflow'}
+             </button>
+          </Panel>
         </ReactFlow>
       </div>
     </div>
