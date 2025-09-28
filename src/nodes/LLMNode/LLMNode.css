@@ -1,0 +1,47 @@
+/* src/nodes/LLMNode/LLMNode.css */
+
+.llm-node-form {
+  display: grid;
+  grid-template-columns: auto 1fr;
+  gap: 8px;
+  align-items: center;
+  font-size: 11px;
+}
+
+.llm-node-form label {
+  font-weight: 500;
+  text-align: right;
+}
+
+.llm-node-form input[type="text"],
+.llm-node-form input[type="number"] {
+  width: 100%;
+  padding: 4px;
+  border: 1px solid #ddd;
+  border-radius: 3px;
+  box-sizing: border-box; /* Important for correct width */
+}
+
+.llm-node-form .range-container {
+  display: grid;
+  grid-template-columns: 1fr auto;
+  gap: 5px;
+  align-items: center;
+}
+
+.llm-node-form input[type="range"] {
+  width: 100%;
+  margin: 0;
+}
+
+.llm-node-form .range-container span {
+  font-variant-numeric: tabular-nums;
+  width: 25px; /* Reserve space to prevent layout shift */
+}
+
+/* Add a separator before the output */
+.llm-node-form + .node-output {
+  margin-top: 10px;
+  padding-top: 10px;
+  border-top: 1px solid #eee;
+}

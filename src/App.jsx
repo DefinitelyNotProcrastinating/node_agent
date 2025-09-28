@@ -1,4 +1,4 @@
-import React, { useState, useCallback } from 'react';
+import React, { useState, useCallback, useMemo, useRef } from 'react';
 import ReactFlow, {
   ReactFlowProvider,
   addEdge,
@@ -9,21 +9,21 @@ import ReactFlow, {
   Panel,
 } from 'reactflow';
 import 'reactflow/dist/style.css';
-import './nodes/nodes.css';
+import './core/styles.css';
 
-import Sidebar from './Sidebar.jsx';
-import TextInputTriggerNode from './nodes/TextInputTriggerNode.jsx';
-import LLMNode from './nodes/LLMNode.jsx';
-import ApiNode from './nodes/ApiNode.jsx';
-import TextDisplayNode from './nodes/TextDisplayNode.jsx';
-import MultiInputNode from './nodes/MultiInputNode.jsx';
+import Sidebar from './core/Sidebar';
+import nodeRegistry from './nodes';
 
-const nodeTypes = {
-  textInputTrigger: TextInputTriggerNode,
-  llmNode: LLMNode,
-  apiNode: ApiNode,
-  textDisplayNode: TextDisplayNode,
-  multiInput: MultiInputNode,
+const getNodeTypes = () => {
+  console.log('[Setup] Building nodeTypes map from registry.');
+  const allNodeKeys = Object.keys(nodeRegistry);
+  return allNodeKeys.reduce((acc, type) => {
+    const config = nodeRegistry[type];
+    if (config && config.component) {
+      acc[type] = config.component;
+    }
+    return acc;
+  }, {});
 };
 
 let id = 1;
@@ -34,222 +34,217 @@ const App = () => {
   const [edges, setEdges, onEdgesChange] = useEdgesState([]);
   const [reactFlowInstance, setReactFlowInstance] = useState(null);
   const [isRunning, setIsRunning] = useState(false);
+  
+  const abortControllerRef = useRef(null);
+  // Refs to hold live state for the orchestrator, accessible from callbacks
+  const liveNodesRef = useRef(new Map());
+  const readyQueueRef = useRef([]);
 
-  const onUpdateNodeData = useCallback((nodeId, newData) => {
-    setNodes((nds) =>
-      nds.map((node) =>
-        node.id === nodeId
-          ? { ...node, data: { ...node.data, ...newData } }
-          : node
-      )
+  const nodeTypes = useMemo(() => getNodeTypes(), []);
+  
+  // Callback for the WORKFLOW to update a node's RUNTIME state (status, output).
+  const updateNodeState = useCallback((nodeId, newData) => {
+    setNodes((currentNodes) =>
+      currentNodes.map((node) => {
+        if (node.id === nodeId) {
+          return { ...node, data: { ...node.data, ...newData } };
+        }
+        return node;
+      })
     );
   }, [setNodes]);
 
-  const updateNodeRuntimeState = (nodeId, newRuntimeState) => {
+  // Callback for the UI to update a node's CONFIGURATION data.
+  // This is the key for "live" updates during a workflow run.
+  const onNodeConfigChange = useCallback((nodeId, configData) => {
+    // 1. Update the React state for the UI
     setNodes((nds) =>
       nds.map((node) =>
-        node.id === nodeId
-          ? {
-              ...node,
-              data: {
-                ...node.data,
-                runtime: { ...node.data.runtime, ...newRuntimeState },
-              },
-            }
-          : node
+        node.id === nodeId ? { ...node, data: { ...node.data, ...configData } } : node
       )
     );
-  };
-
-  const resetAllNodeStatus = () => {
-    setNodes((nds) =>
-      nds.map((node) => ({
-        ...node,
-        data: { ...node.data, runtime: { status: 'pending', output: null, error: null } },
-      }))
-    );
-  };
-
-  const runWorkflow = async () => {
-    const startNode = nodes.find(n => n.data.isStartNode);
-    if (!startNode) {
-      alert("Please mark one 'Text Input Trigger' node as the 'Start Node'.");
-      return;
-    }
     
-    setIsRunning(true);
-    resetAllNodeStatus();
-    
-    const processingQueue = [startNode.id];
-    const completedNodes = new Set();
-    const nodeDependencies = new Map(nodes.map(n => [n.id, edges.filter(e => e.target === n.id).map(e => e.source)]));
-    
-    while (processingQueue.length > 0) {
-      const currentNodeId = processingQueue.shift();
-      const currentNode = nodes.find(n => n.id === currentNodeId);
-      
-      if (!currentNode || completedNodes.has(currentNodeId)) continue;
-      
-      const parents = nodeDependencies.get(currentNodeId) || [];
-      const areParentsReady = parents.every(parentId => completedNodes.has(parentId));
-
-      if (!areParentsReady) {
-          if(!processingQueue.includes(currentNodeId)) processingQueue.push(currentNodeId);
-          continue;
-      }
-
-      updateNodeRuntimeState(currentNodeId, { status: 'running' });
-      
-      try {
-        let output = null;
-        const parentOutputs = parents.map(id => nodes.find(n => n.id === id).data.runtime.output);
-        const config = currentNode.data;
-
-        switch (currentNode.type) {
-          // --- THIS IS THE FIX ---
-          // The logic now correctly uses the node's own configured text as its primary output.
-          // It also handles cases where it might be in the middle of a flow.
-          case 'textInputTrigger':
-            const parentText = parentOutputs.join('\n');
-            const ownText = config.text || '';
-            // If there's parent text, add a space before appending its own text.
-            output = parentText ? `${parentText}\n${ownText}` : ownText;
-            break;
-            
-          case 'llmNode':
-            if (!config.model) throw new Error("Ollama model name is missing.");
-            if (!config.endpoint) throw new Error("Ollama API endpoint is missing.");
-
-            const prompt = parentOutputs.join('\n');
-            if (!prompt) {
-                // If there's no input, we shouldn't call the API.
-                // We'll mark it as a warning/error state instead.
-                throw new Error("Input prompt is empty.");
-            }
-            const options = {
-              temperature: parseFloat(config.temperature),
-              top_p: parseFloat(config.top_p),
-              top_k: parseInt(config.top_k, 10),
-            };
-
-            const payload = {
-              model: config.model,
-              messages: [{ role: "user", content: prompt }],
-              stream: false,
-              options: options
-            };
-
-            const response = await fetch(config.endpoint, {
-              method: 'POST',
-              headers: { 'Content-Type': 'application/json' },
-              body: JSON.stringify(payload)
-            });
-
-            if (!response.ok) {
-              const errorText = await response.text();
-              throw new Error(`API Error: ${response.status} - ${errorText}`);
-            }
-            const result = await response.json();
-            if (!result.message || !result.message.content) {
-              throw new Error("Invalid response structure from Ollama API.");
-            }
-            output = result.message.content;
-            break;
-            
-          case 'apiNode':
-             if (!config.url) throw new Error("API URL is missing.");
-             const apiResponse = await fetch(config.url, {
-                method: 'POST',
-                headers: { 'Content-Type': 'application/json' },
-                body: JSON.stringify({ inputs: parentOutputs }),
-             });
-             if(!apiResponse.ok) throw new Error(`API Error: ${apiResponse.status} ${apiResponse.statusText}`);
-             output = await apiResponse.json();
-             break;
-             
-          case 'multiInput':
-             output = parentOutputs.join('\n');
-             break;
-             
-          case 'textDisplayNode':
-             output = parentOutputs.join('\n');
-             break;
-        }
-
-        updateNodeRuntimeState(currentNodeId, { status: 'completed', output });
-        completedNodes.add(currentNodeId);
+    // 2. If a workflow is running, notify the orchestrator
+    if (isRunning) {
+      const liveNodeInstance = liveNodesRef.current.get(nodeId);
+      if (liveNodeInstance) {
+        console.log(`[Orchestrator] Live-updating config for node ${nodeId}`);
+        // Update the instance's internal data
+        liveNodeInstance.data = { ...liveNodeInstance.data, ...configData };
         
-        const childEdges = edges.filter(e => e.source === currentNodeId);
-        childEdges.forEach(edge => {
-            if(!processingQueue.includes(edge.target)) {
-                processingQueue.push(edge.target);
+        // If the node is a "root" node (like TextNode), it should re-run immediately.
+        // For others, their parents will trigger them. isInputReady is a good proxy.
+        if (liveNodeInstance.isInputReady()) {
+          liveNodeInstance.setState('pending'); // Reset state
+          if (!readyQueueRef.current.includes(liveNodeInstance)) {
+            readyQueueRef.current.push(liveNodeInstance);
+          }
+        }
+      }
+    }
+  }, [isRunning, setNodes]);
+
+
+  const stopWorkflow = () => {
+    if (abortControllerRef.current) {
+      console.log('[Workflow] Sending stop signal...');
+      abortControllerRef.current.abort();
+    }
+  };
+
+  const startWorkflow = async () => {
+    console.log('--- [Workflow] Start command received. ---');
+    setIsRunning(true);
+    abortControllerRef.current = new AbortController();
+    const { signal } = abortControllerRef.current;
+
+    setTimeout(async () => {
+      try {
+        if (!reactFlowInstance) throw new Error("ReactFlow instance not ready.");
+
+        const initialNodes = reactFlowInstance.getNodes();
+        const initialEdges = reactFlowInstance.getEdges();
+
+        // Reset all node UI states
+        setNodes((nds) =>
+          nds.map((n) => ({ ...n, data: { ...n.data, runtime: { status: 'pending' } } }))
+        );
+
+        const graphContext = {
+          getAllNodes: () => reactFlowInstance.getNodes(),
+          getAllEdges: () => initialEdges,
+        };
+        
+        const orchestrator = {
+          addToQueue: (instance) => {
+            if (!readyQueueRef.current.includes(instance)) {
+              readyQueueRef.current.push(instance);
             }
+          }
+        };
+
+        liveNodesRef.current.clear();
+        initialNodes.forEach(node => {
+          const LogicClass = nodeRegistry[node.type]?.logic;
+          if (LogicClass) {
+            const instance = new LogicClass(node.data, node.id, updateNodeState, graphContext, liveNodesRef.current, orchestrator);
+            liveNodesRef.current.set(node.id, instance);
+          }
         });
 
-      } catch (error) {
-        console.error("Error running node:", currentNodeId, error);
-        updateNodeRuntimeState(currentNodeId, { status: 'error', error: error.message });
+        readyQueueRef.current = [];
+        for (const instance of liveNodesRef.current.values()) {
+          instance.runtime.status = 'pending';
+          if (instance.isInputReady()) {
+            readyQueueRef.current.push(instance);
+          }
+        }
+        
+        const runningPromises = new Map();
+        while (!signal.aborted) {
+          while (readyQueueRef.current.length > 0) {
+            const instanceToRun = readyQueueRef.current.shift();
+            
+            const promise = instanceToRun.execute(signal)
+              .then(() => {
+                if (signal.aborted) return;
+                const childEdges = initialEdges.filter(edge => edge.source === instanceToRun.id);
+                const children = childEdges.map(edge => liveNodesRef.current.get(edge.target)).filter(Boolean);
+
+                for (const child of children) {
+                  if (child.isInputReady() && !readyQueueRef.current.includes(child) && child.runtime.status === 'pending') {
+                       readyQueueRef.current.push(child);
+                  }
+                }
+              })
+              .catch(err => {
+                if (err.name !== 'AbortError') {
+                  console.error(`[Workflow] Node ${instanceToRun.id} failed. Stopping workflow.`, err);
+                  if (abortControllerRef.current) abortControllerRef.current.abort();
+                }
+              })
+              .finally(() => {
+                runningPromises.delete(instanceToRun.id);
+              });
+            runningPromises.set(instanceToRun.id, promise);
+          }
+
+          if (runningPromises.size === 0) {
+            console.log('[Workflow] Execution finished successfully (or no runnable nodes left).');
+            break; 
+          }
+          await Promise.race(Array.from(runningPromises.values()));
+        }
+
+        if (signal.aborted) console.log('[Workflow] Execution was stopped.');
+      } catch (e) {
+        console.error("[Workflow] A critical orchestrator error occurred.", e);
+        alert(`Workflow failed: ${e.message}`);
+      } finally {
         setIsRunning(false);
-        return; 
+        abortControllerRef.current = null;
+        liveNodesRef.current.clear();
+        readyQueueRef.current = [];
       }
-    }
-    setIsRunning(false);
+    }, 0);
   };
 
-  const onConnect = useCallback((params) => setEdges((eds) => addEdge(params, eds)), [setEdges]);
+  // --- RE-IMPLEMENTED: Helper function for onConnect ---
+  const getTargetDtype = (targetNode, targetHandle) => {
+    if (targetNode.type === 'concatNode') {
+      const handleIndex = parseInt(targetHandle.replace('in_', ''), 10);
+      const numInputs = targetNode.data.numInputs || 0;
+      if (handleIndex > 0 && handleIndex <= numInputs) return 'string';
+    } else {
+      const targetConfig = nodeRegistry[targetNode.type];
+      return targetConfig?.logic.inputs?.[targetHandle]?.dtype;
+    }
+    return null;
+  };
 
-  const onDrop = useCallback(
-    (event) => {
-      event.preventDefault();
-      const type = event.dataTransfer.getData('application/reactflow');
-      if (!type) return;
+  // --- RE-IMPLEMENTED: onConnect with correct dependencies ---
+  const onConnect = useCallback((params) => {
+    const { source, sourceHandle, target, targetHandle } = params;
+    const sourceNode = reactFlowInstance.getNode(source);
+    const targetNode = reactFlowInstance.getNode(target);
 
-      const position = reactFlowInstance.screenToFlowPosition({ x: event.clientX, y: event.clientY });
-      
-      const baseData = {
-        onUpdate: onUpdateNodeData,
+    if (!sourceNode || !targetNode) return;
+
+    const sourceConfig = nodeRegistry[sourceNode.type];
+    const sourceDtype = sourceConfig?.logic.outputs[sourceHandle]?.dtype;
+    const targetDtype = getTargetDtype(targetNode, targetHandle);
+
+    if (sourceDtype && targetDtype && sourceDtype === targetDtype) {
+      setEdges((eds) => addEdge(params, eds));
+    } else {
+      console.warn(`Type mismatch: Cannot connect ${sourceDtype} to ${targetDtype}.`);
+    }
+  }, [reactFlowInstance, setEdges]); // Depends on the instance being available
+
+  // --- RE-IMPLEMENTED: onDrop with correct dependencies and new callback ---
+  const onDrop = useCallback((event) => {
+    event.preventDefault();
+    const type = event.dataTransfer.getData('application/reactflow');
+    const config = nodeRegistry[type];
+    
+    if (!config || !reactFlowInstance) return;
+
+    const position = reactFlowInstance.screenToFlowPosition({ x: event.clientX, y: event.clientY });
+    
+    const newNode = {
+      id: getId(),
+      type,
+      position,
+      data: {
+        ...(config.defaultData || {}),
         runtime: { status: 'pending', output: null, error: null },
-      };
+        // Pass the NEW callback for live configuration changes
+        onNodeConfigChange: onNodeConfigChange,
+      },
+    };
+    setNodes((nds) => nds.concat(newNode));
+  }, [reactFlowInstance, setNodes, onNodeConfigChange]); // Crucially depends on onNodeConfigChange
 
-      let specificData = {};
-      switch (type) {
-        case 'llmNode':
-          specificData = {
-            endpoint: 'http://localhost:11434/api/chat',
-            model: 'llama3',
-            temperature: 0.8,
-            top_p: 0.9,
-            top_k: 40,
-          };
-          break;
-        case 'apiNode':
-          specificData = {
-            url: 'http://127.0.0.1:8000/api/process',
-          };
-          break;
-        case 'textInputTrigger':
-            specificData = {
-                text: '',
-                isStartNode: false,
-            };
-            break;
-        default:
-          specificData = {};
-          break;
-      }
-
-      const newNode = {
-        id: getId(),
-        type,
-        position,
-        data: { ...baseData, ...specificData },
-      };
-
-      setNodes((nds) => nds.concat(newNode));
-    },
-    [reactFlowInstance, onUpdateNodeData]
-  );
-  
   return (
     <div className="app-container">
       <Sidebar />
@@ -269,9 +264,9 @@ const App = () => {
           <Controls />
           <Background />
           <Panel position="top-right">
-             <button onClick={runWorkflow} disabled={isRunning}>
-                {isRunning ? 'Running...' : 'Run Workflow'}
-             </button>
+            <button onClick={isRunning ? stopWorkflow : startWorkflow} disabled={!reactFlowInstance}>
+              {isRunning ? 'Stop Workflow' : 'Run Workflow'}
+            </button>
           </Panel>
         </ReactFlow>
       </div>
