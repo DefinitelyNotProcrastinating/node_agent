@@ -14,7 +14,7 @@ export default class BaseNode {
       throw new Error("Abstract classes can't be instantiated.");
     }
     
-    this.inputs = this.constructor.inputs || {};
+    // Static outputs are still assigned directly.
     this.outputs = this.constructor.outputs || {};
     
     this.id = id;
@@ -22,9 +22,33 @@ export default class BaseNode {
     this._updateNodeState = updateNodeState;
     this._graph = graphContext;
     this._allLogicInstances = allLogicInstances;
-    this._orchestrator = orchestrator; // New: Reference to the orchestrator
+    this._orchestrator = orchestrator;
 
     this.runtime = { ...nodeData.runtime };
+
+    // NEW: Defer input initialization to a dedicated method.
+    // This allows subclasses to override it for dynamic behavior.
+    this._initializeInputs();
+  }
+  
+  /**
+   * NEW: Initializes the node's inputs.
+   * Subclasses can override this to create inputs dynamically based on `this.data`.
+   * @protected
+   */
+  _initializeInputs() {
+    this.inputs = this.constructor.inputs || {};
+  }
+
+  /**
+   * NEW: A public method to be called when the node's data is updated from the UI.
+   * This is the bridge between the React state and the logic instance.
+   * @param {object} newData - The partial data object that has changed.
+   */
+  onDataUpdate(newData) {
+    this.data = { ...this.data, ...newData };
+    // Re-initialize inputs in case they depend on the new data.
+    this._initializeInputs();
   }
 
   isOutputReady() {
@@ -32,9 +56,18 @@ export default class BaseNode {
   }
 
   isInputReady() {
-    const parentEdges = this._graph.getAllEdges().filter(edge => edge.target === this.id);
-    if (parentEdges.length === 0) return true;
+    // This logic needs to know the defined inputs for the instance.
+    const definedInputs = Object.keys(this.inputs);
+    if (definedInputs.length === 0) return true; // Node with no inputs is always ready.
 
+    const parentEdges = this._graph.getAllEdges().filter(edge => edge.target === this.id);
+    const connectedInputs = new Set(parentEdges.map(edge => edge.targetHandle));
+
+    // Check if all *defined* inputs are connected.
+    const allInputsConnected = definedInputs.every(inputHandle => connectedInputs.has(inputHandle));
+    if (!allInputsConnected) return false;
+
+    // Check if all connected parents are ready.
     return parentEdges.every(edge => {
         const parentInstance = this._allLogicInstances.get(edge.source);
         return parentInstance && parentInstance.isOutputReady();
@@ -53,8 +86,7 @@ export default class BaseNode {
   }
 
   /**
-   * NEW: Resets immediate parent nodes to 'pending' and re-queues them.
-   * This is the engine for creating loops.
+   * Resets immediate parent nodes to 'pending' and re-queues them.
    */
   reReady() {
     console.log(`[Node ${this.id}] is calling reReady on its parents.`);
@@ -63,20 +95,18 @@ export default class BaseNode {
       const parentInstance = this._allLogicInstances.get(edge.source);
       if (parentInstance) {
         parentInstance.setState('pending');
-        // Tell the orchestrator to consider this node for execution again.
         this._orchestrator.addToQueue(parentInstance);
       }
     });
   }
 
   /**
-   * The execute method now accepts the AbortSignal from the orchestrator.
+   * The execute method.
    * @param {AbortSignal} abortSignal 
    */
   async execute(abortSignal) {
     if (this.runtime.status !== 'pending' && this.runtime.status !== 'ready') return;
 
-    // Check if the workflow was aborted before we even start.
     if (abortSignal.aborted) {
       this.setState('pending', { error: 'Cancelled before start' });
       return;
@@ -86,7 +116,6 @@ export default class BaseNode {
       this.setState('running');
       const inputData = this._collectInputData();
       
-      // --- CHANGE IS HERE: Pass the signal to the update method ---
       const outputData = await this.update(inputData, abortSignal);
       
       this.setState('completed', { output: outputData });
@@ -94,12 +123,11 @@ export default class BaseNode {
     } catch (error) {
       if (error.name === 'AbortError') {
         console.log(`[Node ${this.id}] Execution was cancelled.`);
-        // Reset to pending so it can run again in a future workflow.
         this.setState('pending', { error: 'Cancelled' });
       } else {
         console.error(`Error executing node ${this.id} (${this.constructor.name}):`, error);
         this.setState('error', { error: error.message });
-        throw error; // Re-throw to let the orchestrator know about the failure.
+        throw error;
       }
     }
   }
@@ -119,10 +147,7 @@ export default class BaseNode {
     return collectedData;
   }
   
-  // To be implemented by subclasses
   async update(inputs) {
     throw new Error(`Method 'update()' must be implemented by subclass ${this.constructor.name}.`);
   }
-
-  
 }

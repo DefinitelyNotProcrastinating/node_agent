@@ -1,0 +1,43 @@
+/* Make the overall node container grow with its content */
+.react-flow__node-concatNode {
+  height: auto !important; /* Override default fixed height from React Flow */
+  min-width: 200px;
+  padding-bottom: 20px; /* Add some space at the bottom */
+}
+
+/* Style the container for the +/- buttons */
+.concat-controls {
+  display: flex;
+  gap: 8px;
+  margin-bottom: 10px;
+  padding: 8px;
+  border-bottom: 1px solid #ddd;
+}
+
+/* Style the container for the dynamic handles */
+.dynamic-handles-container {
+  display: flex;
+  flex-direction: column;
+  gap: 4px; /* Space between each input row */
+  padding: 0 8px;
+}
+
+/* Style each individual handle row (handle + label) */
+.dynamic-handle {
+  display: flex;
+  align-items: center;
+  position: relative; /* Needed for the absolute positioning of the handle */
+  height: 20px; /* Give each row a consistent height */
+}
+
+.dynamic-handle label {
+  margin-left: 15px; /* Push the label text away from the handle */
+}
+
+/* Override the inline 'top' style from the component to be relative to the container */
+.dynamic-handle .react-flow__handle {
+  position: relative !important;
+  top: auto !important; /* Let flexbox handle the vertical positioning */
+  transform: none !important; /* Reset transform */
+  left: 0;
+}
